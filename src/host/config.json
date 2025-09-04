@@ -1,0 +1,35 @@
+{
+  "anthropic": {
+    "api_key": "tu-api-key-aqui",
+    "model": "claude-3-sonnet-20240229",
+    "max_tokens": 4000
+  },
+  "mcp_servers": [
+    {
+      "name": "filesystem",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/directory"],
+      "description": "Servidor para operaciones de sistema de archivos",
+      "enabled": false
+    },
+    {
+      "name": "git",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-git", "--repository", "/path/to/repo"],
+      "description": "Servidor para operaciones de Git",
+      "enabled": false
+    },
+    {
+      "name": "custom",
+      "command": "python",
+      "args": ["C:\\ruta\\MCP-PokeVGC-Teambuilder\\server\\main.py"],
+      "description": "Mi servidor MCP personalizado (VGC)",
+      "enabled": true
+    }
+  ],
+  "logging": {
+    "level": "INFO",
+    "file": "mcp_interactions.log",
+    "max_history": 1000
+  }
+}
