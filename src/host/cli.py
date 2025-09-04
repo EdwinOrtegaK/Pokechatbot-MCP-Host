@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from typing import Dict, List, Any, Optional, Tuple 
+from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 import subprocess
 import sys
@@ -51,6 +51,7 @@ class MCPServer:
     name: str
     command: str
     args: List[str]
+    cwd: Optional[str] = None
     description: str = ""
 
 class MCPLogger:
@@ -99,58 +100,77 @@ class MCPChatbot:
         self.logger = MCPLogger()
         
     def add_mcp_server(self, server: MCPServer):
-        """Agrega un servidor MCP a la configuración"""
+        entry = server.args[-1] if server.args else ""
+        if entry.lower().endswith(".py") and not os.path.exists(entry):
+            print(f"[CONFIG ERROR] No existe el entrypoint: {entry}")
+            return
+    
         self.mcp_servers[server.name] = server
         print(f" Servidor MCP '{server.name}' agregado: {server.description}")
+
+    async def _connect_to_single_server(self, name: str, server: MCPServer):
+        child_env = dict(os.environ)
+        child_env["PYTHONUNBUFFERED"] = "1"
+        if server.cwd:
+            child_env["PYTHONPATH"] = "."
+
+        params = StdioServerParameters(
+            command=server.command,
+            args=server.args,   # p.ej. ["-u","-m","server.main"]
+            cwd=server.cwd,     # p.ej. C:\...\MCP-PokeVGC-Teambuilder
+            env=child_env
+        )
+
+        print(f"→ Lanzando: {server.command} {' '.join(server.args)}")
+        if server.cwd:
+            print(f"  cwd: {server.cwd}")
+
+        ctx = stdio_client(params)
+        try:
+            reader, writer = await asyncio.wait_for(ctx.__aenter__(), timeout=30)
+
+            session = ClientSession(reader, writer)
+            await asyncio.wait_for(session.initialize(), timeout=30)
+
+            tools_result = await asyncio.wait_for(session.list_tools(), timeout=30)
+
+            self.active_sessions[name] = session
+            if not hasattr(self, "_ctx_managers"):
+                self._ctx_managers = {}
+            self._ctx_managers[name] = ctx
+
+            server_tools = 0
+            if getattr(tools_result, "tools", None):
+                for tool in tools_result.tools:
+                    key = f"{name}_{tool.name}"
+                    self.available_tools[key] = {
+                        "name": tool.name,
+                        "description": getattr(tool, "description", "") or "",
+                        "server": name,
+                        "schema": getattr(tool, "inputSchema",
+                                         {"type":"object","properties":{}, "required":[]})
+                    }
+                    server_tools += 1
+
+            self.logger.log_interaction(name, "CONNECT",
+                                        {"status":"success","tools_count":server_tools})
+            print(f" ✓ Conectado a '{name}' - {server_tools} herramientas disponibles")
+
+        except asyncio.TimeoutError:
+            await self._safe_context_exit(ctx)
+            raise RuntimeError("Timeout durante conexión (STDIO/initialize/tools). "
+                               "Revisa logging del servidor y framing.")
+        except Exception:
+            await self._safe_context_exit(ctx)
+            raise
     
     async def connect_to_mcp_servers(self):
-        """Conecta a todos los servidores MCP configurados"""
-        print(" Conectando a servidores MCP...")
-        
+        print("\nConectando a servidores MCP...")
         for name, server in self.mcp_servers.items():
             try:
-                # Crear parámetros del servidor
-                server_params = StdioServerParameters(
-                    command=server.command,
-                    args=server.args
-                )
-                
-                # Conectar al servidor como ASYNC CONTEXT MANAGER
-                ctx = stdio_client.connect(server_params)
-                reader, writer = await ctx.__aenter__()
-                session = ClientSession(reader, writer)
-                await session.initialize()
-                self.active_sessions[name] = session
-
-                # Guarda el context manager para cerrarlo en disconnect()
-                if not hasattr(self, "_ctx_managers"):
-                    self._ctx_managers = {}
-                self._ctx_managers[name] = ctx
-                
-                # Obtener herramientas disponibles
-                tools_result = await session.list_tools()
-                server_tools = {}
-                
-                if hasattr(tools_result, 'tools'):
-                    for tool in tools_result.tools:
-                        tool_name = f"{name}_{tool.name}"
-                        server_tools[tool_name] = {
-                            "name": tool.name,
-                            "description": tool.description,
-                            "server": name,
-                            "schema": tool.inputSchema if hasattr(tool, 'inputSchema') else {}
-                        }
-                        self.available_tools[tool_name] = server_tools[tool_name]
-                
-                self.logger.log_interaction(name, "CONNECT", {
-                    "status": "success",
-                    "tools_count": len(server_tools)
-                })
-                
-                print(f" Conectado a '{name}' - {len(server_tools)} herramientas disponibles")
-                
+                await self._connect_to_single_server(name, server)
             except Exception as e:
-                print(f" Error conectando a '{name}': {str(e)}")
+                print(f"Error conectando a '{name}': {e}")
                 self.logger.log_interaction(name, "CONNECT_ERROR", str(e))
     
     async def call_mcp_tool(self, server_name: str, tool_name: str, arguments: Dict[str, Any]) -> Any:
@@ -311,24 +331,6 @@ class MCPChatbot:
             error_msg = f"Error en chat: {str(e)}"
             print(f" {error_msg}")
             return error_msg
-        
-    async def disconnect(self):
-        print("Desconectando servidores MCP...")
-        # Cierra sesiones
-        for name, session in self.active_sessions.items():
-            try:
-                await session.close()
-                print(f"Desconectado de '{name}'")
-            except Exception as e:
-                print(f"Error desconectando '{name}': {str(e)}")
-        # Cierra context managers (stdio)
-        if hasattr(self, "_ctx_managers"):
-            for name, ctx in self._ctx_managers.items():
-                try:
-                    await ctx.__aexit__(None, None, None)
-                except Exception:
-                    pass
-            self._ctx_managers.clear()
     
     def show_available_tools(self):
         """Muestra las herramientas MCP disponibles"""
@@ -366,14 +368,34 @@ class MCPChatbot:
             print()
     
     async def disconnect(self):
-        """Desconecta de todos los servidores MCP"""
         print("Desconectando servidores MCP...")
+        # Cierra sesiones
         for name, session in self.active_sessions.items():
             try:
                 await session.close()
                 print(f"Desconectado de '{name}'")
             except Exception as e:
                 print(f"Error desconectando '{name}': {str(e)}")
+        # Cierra context managers (stdio)
+        if hasattr(self, "_ctx_managers"):
+            for name, ctx in self._ctx_managers.items():
+                try:
+                    await ctx.__aexit__(None, None, None)
+                except Exception:
+                    pass
+            self._ctx_managers.clear()
+
+    async def _safe_context_exit(self, ctx):
+        try:
+            await ctx.__aexit__(None, None, None)
+        except Exception:
+            pass
+
+    async def _safe_session_close(self, session):
+        try:
+            await session.close()
+        except Exception:
+            pass
 
 async def main():
     load_dotenv()
@@ -408,19 +430,27 @@ async def main():
     custom_path = os.getenv("CUSTOM_MCP_SERVER_PATH")
     custom_args = os.getenv("CUSTOM_MCP_SERVER_ARGS", "").strip()
     custom_cmd  = os.getenv("CUSTOM_MCP_SERVER_CMD", "python")
+    custom_cwd  = os.getenv("CUSTOM_MCP_CWD", "").strip()
 
-    if custom_path:
-        args = [custom_path] + (custom_args.split() if custom_args else [])
-        custom_server = MCPServer(
-            name="custom",
-            command=custom_cmd,
-            args=args,
-            description="Tu servidor MCP personalizado"
-        )
-        chatbot.add_mcp_server(custom_server)
-        print(f"Servidor personalizado configurado: {custom_cmd} {' '.join(args)}")
+    if custom_args:
+        args = custom_args.split()
     else:
-        print("CUSTOM_MCP_SERVER_PATH no encontrado en .env")
+        args = []
+
+    custom_server = MCPServer(
+        name="custom",
+        command=custom_cmd,
+        args=args,
+        cwd=custom_cwd or None,
+        description="Tu servidor MCP personalizado"
+    )
+    chatbot.add_mcp_server(custom_server)
+
+    print(f"Servidor personalizado configurado: {custom_cmd} {' '.join(args)}")
+    if custom_cwd:
+        print(f"cwd del servidor: {custom_cwd}")
+    else:
+        print("Sin CUSTOM_MCP_CWD: si usas '-m server.main' necesitas poner el repo como CWD.")
 
     
     # Agregar más servidores según sea necesario
