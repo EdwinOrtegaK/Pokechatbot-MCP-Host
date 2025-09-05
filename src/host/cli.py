@@ -106,18 +106,20 @@ class MCPChatbot:
             return
     
         self.mcp_servers[server.name] = server
-        print(f" Servidor MCP '{server.name}' agregado: {server.description}")
+        print(f"✓ Servidor MCP '{server.name}' agregado: {server.description}")
 
     async def _connect_to_single_server(self, name: str, server: MCPServer):
+        """Conecta a un servidor MCP individual con mejor manejo de errores"""
         child_env = dict(os.environ)
         child_env["PYTHONUNBUFFERED"] = "1"
+        child_env["PYTHONIOENCODING"] = "utf-8"
         if server.cwd:
             child_env["PYTHONPATH"] = "."
 
         params = StdioServerParameters(
             command=server.command,
-            args=server.args,   # p.ej. ["-u","-m","server.main"]
-            cwd=server.cwd,     # p.ej. C:\...\MCP-PokeVGC-Teambuilder
+            args=server.args,
+            cwd=server.cwd,
             env=child_env
         )
 
@@ -125,53 +127,101 @@ class MCPChatbot:
         if server.cwd:
             print(f"  cwd: {server.cwd}")
 
-        ctx = stdio_client(params)
+        ctx = None
+        session = None
+        
         try:
+            # Crear conexión STDIO con timeout más largo
+            ctx = stdio_client(params)
+            print(f"  Estableciendo conexión STDIO...")
             reader, writer = await asyncio.wait_for(ctx.__aenter__(), timeout=30)
 
+            # Crear sesión MCP
             session = ClientSession(reader, writer)
-            await asyncio.wait_for(session.initialize(), timeout=30)
+            print(f"  Inicializando sesión MCP...")
+            
+            # Initialize con timeout extendido
+            init_result = await asyncio.wait_for(session.initialize(), timeout=30)
+            print(f"  ✓ Sesión inicializada: {init_result}")
+            
+            # List tools con timeout extendido
+            print(f"  Obteniendo herramientas...")
+            tools_result = await asyncio.wait_for(session.list_tools(), timeout=15)
+            print(f"  ✓ Herramientas obtenidas: {len(tools_result.tools if tools_result.tools else 0)} tools")
 
-            tools_result = await asyncio.wait_for(session.list_tools(), timeout=30)
-
+            # Guardar sesión y contexto
             self.active_sessions[name] = session
             if not hasattr(self, "_ctx_managers"):
                 self._ctx_managers = {}
             self._ctx_managers[name] = ctx
 
+            # Procesar herramientas
             server_tools = 0
-            if getattr(tools_result, "tools", None):
+            if hasattr(tools_result, "tools") and tools_result.tools:
                 for tool in tools_result.tools:
                     key = f"{name}_{tool.name}"
                     self.available_tools[key] = {
                         "name": tool.name,
                         "description": getattr(tool, "description", "") or "",
                         "server": name,
-                        "schema": getattr(tool, "inputSchema",
-                                         {"type":"object","properties":{}, "required":[]})
+                        "schema": getattr(tool, "inputSchema", {
+                            "type": "object",
+                            "properties": {},
+                            "required": []
+                        })
                     }
                     server_tools += 1
+                    print(f"    → {tool.name}: {getattr(tool, 'description', 'Sin descripción')}")
 
-            self.logger.log_interaction(name, "CONNECT",
-                                        {"status":"success","tools_count":server_tools})
-            print(f" ✓ Conectado a '{name}' - {server_tools} herramientas disponibles")
+            self.logger.log_interaction(name, "CONNECT", {
+                "status": "success",
+                "tools_count": server_tools,
+                "tools": [t.name for t in (tools_result.tools or [])]
+            })
+            print(f"✅ Conectado a '{name}' - {server_tools} herramientas disponibles\n")
 
-        except asyncio.TimeoutError:
-            await self._safe_context_exit(ctx)
-            raise RuntimeError("Timeout durante conexión (STDIO/initialize/tools). "
-                               "Revisa logging del servidor y framing.")
-        except Exception:
-            await self._safe_context_exit(ctx)
-            raise
+        except asyncio.TimeoutError as e:
+            error_msg = f"Timeout durante conexión. El servidor puede estar tardando en responder."
+            print(f"❌ {error_msg}")
+            await self._safe_cleanup(ctx, session)
+            raise RuntimeError(error_msg)
+        except Exception as e:
+            error_msg = f"Error de conexión: {str(e)}"
+            print(f"❌ {error_msg}")
+            await self._safe_cleanup(ctx, session)
+            raise RuntimeError(error_msg)
+
+    async def _safe_cleanup(self, ctx, session):
+        """Limpia recursos de manera segura"""
+        if session:
+            try:
+                await asyncio.wait_for(session.close(), timeout=5)
+            except:
+                pass
+        if ctx:
+            try:
+                await asyncio.wait_for(ctx.__aexit__(None, None, None), timeout=5)
+            except:
+                pass
     
     async def connect_to_mcp_servers(self):
-        print("\nConectando a servidores MCP...")
+        """Conecta a todos los servidores MCP configurados"""
+        if not self.mcp_servers:
+            print("⚠️  No hay servidores MCP configurados")
+            return
+            
+        print("\n🔌 Conectando a servidores MCP...")
+        successful_connections = 0
+        
         for name, server in self.mcp_servers.items():
             try:
                 await self._connect_to_single_server(name, server)
+                successful_connections += 1
             except Exception as e:
-                print(f"Error conectando a '{name}': {e}")
+                print(f"❌ Error conectando a '{name}': {e}")
                 self.logger.log_interaction(name, "CONNECT_ERROR", str(e))
+        
+        print(f"📊 Resumen: {successful_connections}/{len(self.mcp_servers)} servidores conectados")
     
     async def call_mcp_tool(self, server_name: str, tool_name: str, arguments: Dict[str, Any]) -> Any:
         """Llama a una herramienta de un servidor MCP específico"""
@@ -187,19 +237,31 @@ class MCPChatbot:
                 "arguments": arguments
             })
             
-            # Llamar a la herramienta
-            result = await session.call_tool(tool_name, arguments)
+            print(f"🔧 Llamando herramienta '{tool_name}' en servidor '{server_name}'...")
+            
+            # Llamar a la herramienta con timeout
+            result = await asyncio.wait_for(
+                session.call_tool(tool_name, arguments), 
+                timeout=30
+            )
             
             # Log de la respuesta
+            result_str = str(result)
             self.logger.log_interaction(server_name, "TOOL_RESPONSE", {
                 "tool": tool_name,
-                "result": str(result)[:500] + "..." if len(str(result)) > 500 else str(result)
+                "result": result_str[:500] + "..." if len(result_str) > 500 else result_str
             })
             
             return result
             
+        except asyncio.TimeoutError:
+            error_msg = f"Timeout llamando herramienta '{tool_name}' en '{server_name}'"
+            print(f"⏰ {error_msg}")
+            self.logger.log_interaction(server_name, "TOOL_ERROR", error_msg)
+            return {"error": error_msg}
         except Exception as e:
             error_msg = f"Error llamando herramienta '{tool_name}' en '{server_name}': {str(e)}"
+            print(f"❌ {error_msg}")
             self.logger.log_interaction(server_name, "TOOL_ERROR", error_msg)
             return {"error": error_msg}
     
@@ -264,9 +326,11 @@ class MCPChatbot:
             # Preparar herramientas para Anthropic
             tools = self.format_tools_for_anthropic()
             
+            print(f"🤖 Consultando Claude con {len(tools)} herramientas disponibles...")
+            
             # Llamar a Anthropic
             response = self.anthropic_client.messages.create(
-                model="claude-3-sonnet-20240229",
+                model="claude-sonnet-4-20250514",
                 max_tokens=4000,
                 messages=self.conversation_history,
                 tools=tools if tools else []
@@ -284,6 +348,8 @@ class MCPChatbot:
             
             # Si hay llamadas a herramientas, procesarlas
             if tool_calls:
+                print(f"🔧 Procesando {len(tool_calls)} llamadas a herramientas...")
+                
                 # Agregar la respuesta con tool calls al historial
                 self.conversation_history.append({
                     "role": "assistant",
@@ -301,7 +367,7 @@ class MCPChatbot:
                 
                 # Obtener respuesta final
                 final_response = self.anthropic_client.messages.create(
-                    model="claude-3-sonnet-20240229",
+                    model="claude-sonnet-4-20250514",
                     max_tokens=4000,
                     messages=self.conversation_history,
                     tools=tools
@@ -329,31 +395,38 @@ class MCPChatbot:
                 
         except Exception as e:
             error_msg = f"Error en chat: {str(e)}"
-            print(f" {error_msg}")
+            print(f"❌ {error_msg}")
             return error_msg
     
     def show_available_tools(self):
         """Muestra las herramientas MCP disponibles"""
         if not self.available_tools:
-            print("No hay herramientas MCP disponibles")
+            print("⚠️  No hay herramientas MCP disponibles")
             return
         
-        print("\n HERRAMIENTAS MCP DISPONIBLES:")
+        print("\n🛠️  HERRAMIENTAS MCP DISPONIBLES:")
         print("=" * 50)
         
+        by_server = {}
         for tool_key, tool_info in self.available_tools.items():
-            print(f"   {tool_key}")
-            print(f"   Servidor: {tool_info['server']}")
-            print(f"   Descripción: {tool_info['description']}")
-            print()
+            server = tool_info['server']
+            if server not in by_server:
+                by_server[server] = []
+            by_server[server].append(tool_info)
+        
+        for server_name, tools in by_server.items():
+            print(f"\n📡 Servidor: {server_name}")
+            for tool in tools:
+                print(f"   • {tool['name']}: {tool['description']}")
+        print()
     
     def show_conversation_history(self):
         """Muestra el historial de la conversación"""
         if not self.conversation_history:
-            print("No hay historial de conversación")
+            print("📝 No hay historial de conversación")
             return
         
-        print("\nHISTORIAL DE CONVERSACIÓN:")
+        print("\n📝 HISTORIAL DE CONVERSACIÓN:")
         print("=" * 50)
         
         for i, message in enumerate(self.conversation_history, 1):
@@ -368,142 +441,146 @@ class MCPChatbot:
             print()
     
     async def disconnect(self):
-        print("Desconectando servidores MCP...")
+        """Desconecta todos los servidores MCP"""
+        if not self.active_sessions and not hasattr(self, "_ctx_managers"):
+            return
+            
+        print("\n🔌 Desconectando servidores MCP...")
+        
         # Cierra sesiones
         for name, session in self.active_sessions.items():
             try:
-                await session.close()
-                print(f"Desconectado de '{name}'")
+                await asyncio.wait_for(session.close(), timeout=5)
+                print(f"✓ Desconectado de '{name}'")
             except Exception as e:
-                print(f"Error desconectando '{name}': {str(e)}")
+                print(f"⚠️  Error desconectando '{name}': {str(e)}")
+        
         # Cierra context managers (stdio)
         if hasattr(self, "_ctx_managers"):
             for name, ctx in self._ctx_managers.items():
                 try:
-                    await ctx.__aexit__(None, None, None)
+                    await asyncio.wait_for(ctx.__aexit__(None, None, None), timeout=5)
                 except Exception:
                     pass
             self._ctx_managers.clear()
-
-    async def _safe_context_exit(self, ctx):
-        try:
-            await ctx.__aexit__(None, None, None)
-        except Exception:
-            pass
-
-    async def _safe_session_close(self, session):
-        try:
-            await session.close()
-        except Exception:
-            pass
+        
+        self.active_sessions.clear()
 
 async def main():
-    load_dotenv()
-
     """Función principal del chatbot"""
-    print("\nPoke VGC — MCP Host")
+    load_dotenv()
+    
+    print("\n🚀 Poke VGC — MCP Host")
     print("=" * 60)
     
     # Solicitar API key de Anthropic
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
-        api_key = input("Ingresa tu API key de Anthropic: ").strip()
+        api_key = input("🔑 Ingresa tu API key de Anthropic: ").strip()
         if not api_key:
-            print("API key requerida\n")
+            print("❌ API key requerida\n")
             return
     
     # Crear chatbot
     chatbot = MCPChatbot(api_key)
     
-    # Ejemplo de servidores MCP (personaliza según tus servidores)
-    print("\nConfigurando servidores MCP...\n")
+    # Configuración del servidor MCP personalizado desde .env
+    print("\n⚙️  Configurando servidores MCP...")
     
-    # Servidor de sistema de archivos (oficial de Anthropic)
-    filesystem_server = MCPServer(
-        name="filesystem",
-        command="npx",
-        args=["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/directory"],
-        description="Servidor para operaciones de sistema de archivos"
-    )
-    
-    # Servidor MCP personalizado
-    custom_path = os.getenv("CUSTOM_MCP_SERVER_PATH")
+    custom_cmd = os.getenv("CUSTOM_MCP_SERVER_CMD", "python")
     custom_args = os.getenv("CUSTOM_MCP_SERVER_ARGS", "").strip()
-    custom_cmd  = os.getenv("CUSTOM_MCP_SERVER_CMD", "python")
-    custom_cwd  = os.getenv("CUSTOM_MCP_CWD", "").strip()
+    custom_cwd = os.getenv("CUSTOM_MCP_CWD", "").strip()
 
-    if custom_args:
-        args = custom_args.split()
-    else:
-        args = []
+    if not custom_args:
+        print("❌ CUSTOM_MCP_SERVER_ARGS no configurado en .env")
+        return
 
+    args = custom_args.split()
+    
     custom_server = MCPServer(
-        name="custom",
+        name="pokevgc",
         command=custom_cmd,
         args=args,
         cwd=custom_cwd or None,
-        description="Tu servidor MCP personalizado"
+        description="Servidor MCP para construcción de equipos Pokémon VGC"
     )
-    chatbot.add_mcp_server(custom_server)
-
-    print(f"Servidor personalizado configurado: {custom_cmd} {' '.join(args)}")
-    if custom_cwd:
-        print(f"cwd del servidor: {custom_cwd}")
-    else:
-        print("Sin CUSTOM_MCP_CWD: si usas '-m server.main' necesitas poner el repo como CWD.")
-
     
-    # Agregar más servidores según sea necesario
-    # chatbot.add_mcp_server(filesystem_server)  # Descomenta si quieres usar filesystem
+    chatbot.add_mcp_server(custom_server)
+    
+    print(f"📋 Configuración:")
+    print(f"   Comando: {custom_cmd}")
+    print(f"   Args: {' '.join(args)}")
+    if custom_cwd:
+        print(f"   Directorio: {custom_cwd}")
     
     try:
         # Conectar a servidores MCP
         await chatbot.connect_to_mcp_servers()
         
+        # Verificar si hay herramientas disponibles
+        if not chatbot.available_tools:
+            print("\n⚠️  No se pudieron cargar herramientas MCP.")
+            print("El chatbot funcionará sin capacidades MCP.")
+        
         # Mostrar herramientas disponibles
         chatbot.show_available_tools()
         
-        print("\n¡Host listo!")
-        print("Comandos: help • tools • history • logs • quit")
-        print("Escribe tu mensaje para empezar.\n")
+        print("\n✅ ¡Host listo!")
+        print("💬 Comandos disponibles:")
+        print("   help     - Muestra ayuda")
+        print("   tools    - Lista herramientas MCP")
+        print("   history  - Muestra historial")
+        print("   logs     - Muestra logs MCP")
+        print("   quit     - Salir")
+        print("\n💭 Escribe tu mensaje para empezar...\n")
         
         # Loop principal del chat
         while True:
-                    user = input("👤 Tú: ").strip()
-                    if not user:
-                        continue
-                    low = user.lower()
-                    if low == "quit":
-                        break
-                    if low == "help":
-                        print("\nCOMANDOS")
-                        print("  help     Muestra esta ayuda")
-                        print("  tools    Lista de herramientas MCP disponibles")
-                        print("  history  Historial de conversación")
-                        print("  logs     Muestra logs de interacciones MCP")
-                        print("  quit     Salir\n")
-                        continue
-                    if low == "tools":
-                        chatbot.show_available_tools()
-                        continue
-                    if low == "history":
-                        chatbot.show_conversation_history()
-                        continue
-                    if low == "logs":
-                        chatbot.logger.show_logs()
-                        continue
-                    
-                    print("Claude: ", end="", flush=True)
-                    answer = await chatbot.chat(user)
-                    print(answer + "\n")
+            try:
+                user_input = input("👤 Tú: ").strip()
+                if not user_input:
+                    continue
+                
+                user_lower = user_input.lower()
+                
+                if user_lower == "quit":
+                    break
+                elif user_lower == "help":
+                    print("\n📚 COMANDOS DISPONIBLES:")
+                    print("   help     - Muestra esta ayuda")
+                    print("   tools    - Lista de herramientas MCP disponibles")
+                    print("   history  - Historial de conversación")
+                    print("   logs     - Muestra logs de interacciones MCP")
+                    print("   quit     - Salir del chatbot\n")
+                    continue
+                elif user_lower == "tools":
+                    chatbot.show_available_tools()
+                    continue
+                elif user_lower == "history":
+                    chatbot.show_conversation_history()
+                    continue
+                elif user_lower == "logs":
+                    chatbot.logger.show_logs()
+                    continue
+                
+                # Procesar mensaje normal
+                print("🤖 Claude: ", end="", flush=True)
+                response = await chatbot.chat(user_input)
+                print(response + "\n")
+                
+            except KeyboardInterrupt:
+                print("\n\n⏸️  Interrumpido por el usuario")
+                break
+            except Exception as e:
+                print(f"\n❌ Error procesando mensaje: {str(e)}\n")
     
     except KeyboardInterrupt:
-        print("\nInterrumpido por el usuario")
+        print("\n⏸️  Interrumpido por el usuario")
     except Exception as e:
-        print(f"Error: {str(e)}")
+        print(f"❌ Error fatal: {str(e)}")
     finally:
         await chatbot.disconnect()
-        print("¡Hasta luego!")
+        print("👋 ¡Hasta luego!")
 
 if __name__ == "__main__":
     asyncio.run(main())
