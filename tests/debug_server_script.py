@@ -1,321 +1,294 @@
 #!/usr/bin/env python3
 """
-Script para diagnosticar problemas con el servidor MCP de Pokémon VGC
+Test de diagnóstico para MCP - Simula exactamente lo que hace tu host
 """
-
+import asyncio
+import json
+import logging
 import subprocess
 import sys
 import os
-import time
-import json
-from pathlib import Path
+from datetime import datetime
 
-def test_1_basic_paths():
-    """Prueba 1: Verificar que todas las rutas básicas existen"""
-    print("🔍 PRUEBA 1: Verificando rutas básicas...")
-    
-    server_path = "C:/Users/Andy Ortega/Progras/Redes/MCP-PokeVGC-Teambuilder"
-    python_exe = f"{server_path}/.venv/Scripts/python.exe"
-    main_file = os.path.join(server_path, "server", "main.py")
-    
-    checks = [
-        (server_path, "Directorio del servidor"),
-        (python_exe, "Ejecutable de Python"),
-        (main_file, "Archivo server/main.py"),
-    ]
-    
-    all_ok = True
-    for path, description in checks:
-        if os.path.exists(path):
-            print(f"✅ {description}: {path}")
-        else:
-            print(f"❌ {description}: {path} (NO EXISTE)")
-            all_ok = False
-    
-    return all_ok
+# Configurar logging detallado
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
 
-def test_2_python_environment():
-    """Prueba 2: Verificar el entorno de Python y dependencias"""
-    print("\n🔍 PRUEBA 2: Verificando entorno de Python...")
+async def test_mcp_connection():
+    """Test completo de conexión MCP paso a paso"""
     
-    server_path = "C:/Users/Andy Ortega/Progras/Redes/MCP-PokeVGC-Teambuilder"
-    python_exe = f"{server_path}/.venv/Scripts/python.exe"
+    # Configuración del servidor (ajusta estas rutas)
+    cmd = "C:/Users/Andy Ortega/Progras/Redes/MCP-PokeVGC-Teambuilder/.venv/Scripts/python.exe"
+    args = ["-u", "-m", "server.main"]
+    cwd = "C:/Users/Andy Ortega/Progras/Redes/MCP-PokeVGC-Teambuilder"
     
-    if not os.path.exists(python_exe):
-        print("❌ Python no existe, saltando prueba")
-        return False
-    
-    # Verificar que Python funciona
-    try:
-        result = subprocess.run(
-            [python_exe, "--version"],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        if result.returncode == 0:
-            print(f"✅ Python funciona: {result.stdout.strip()}")
-        else:
-            print(f"❌ Python falló: {result.stderr}")
-            return False
-    except Exception as e:
-        print(f"❌ Error ejecutando Python: {e}")
-        return False
-    
-    # Verificar dependencias MCP
-    try:
-        result = subprocess.run(
-            [python_exe, "-c", "import mcp; print('MCP OK')"],
-            cwd=server_path,
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        if result.returncode == 0:
-            print("✅ Librería MCP disponible")
-        else:
-            print(f"❌ Librería MCP no disponible: {result.stderr}")
-            return False
-    except Exception as e:
-        print(f"❌ Error verificando MCP: {e}")
-        return False
-    
-    return True
-
-def test_3_server_syntax():
-    """Prueba 3: Verificar que el servidor no tiene errores de sintaxis"""
-    print("\n🔍 PRUEBA 3: Verificando sintaxis del servidor...")
-    
-    server_path = "C:/Users/Andy Ortega/Progras/Redes/MCP-PokeVGC-Teambuilder"
-    python_exe = f"{server_path}/.venv/Scripts/python.exe"
-    
-    try:
-        result = subprocess.run(
-            [python_exe, "-m", "py_compile", "server/main.py"],
-            cwd=server_path,
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        
-        if result.returncode == 0:
-            print("✅ Sintaxis del servidor correcta")
-            return True
-        else:
-            print(f"❌ Error de sintaxis: {result.stderr}")
-            return False
-    except Exception as e:
-        print(f"❌ Error verificando sintaxis: {e}")
-        return False
-
-def test_4_server_startup():
-    """Prueba 4: Verificar que el servidor puede iniciarse"""
-    print("\n🔍 PRUEBA 4: Probando inicio del servidor...")
-    
-    server_path = "C:/Users/Andy Ortega/Progras/Redes/MCP-PokeVGC-Teambuilder"
-    python_exe = f"{server_path}/.venv/Scripts/python.exe"
-    
-    try:
-        print("  Iniciando servidor (máximo 10 segundos)...")
-        process = subprocess.Popen(
-            [python_exe, "-u", "-m", "server.main"],
-            cwd=server_path,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=0  # Sin buffer para ver output inmediato
-        )
-        
-        # Esperar un poco para ver si se inicia
-        time.sleep(5)
-        
-        if process.poll() is None:
-            print("✅ El servidor se inició correctamente y sigue ejecutándose")
-            
-            # Intentar terminarlo graciosamente
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-                print("✅ Servidor terminado correctamente")
-            except subprocess.TimeoutExpired:
-                process.kill()
-                print("⚠️ Servidor forzado a terminar")
-            
-            return True
-        else:
-            # El proceso ya terminó
-            stdout, stderr = process.communicate()
-            print("❌ El servidor terminó inmediatamente")
-            print(f"CÓDIGO DE SALIDA: {process.returncode}")
-            if stdout:
-                print(f"STDOUT:\n{stdout}")
-            if stderr:
-                print(f"STDERR:\n{stderr}")
-            return False
-            
-    except Exception as e:
-        print(f"❌ Error ejecutando servidor: {e}")
-        return False
-
-def test_5_server_output():
-    """Prueba 5: Capturar y analizar output del servidor"""
-    print("\n🔍 PRUEBA 5: Analizando output del servidor...")
-    
-    server_path = "C:/Users/Andy Ortega/Progras/Redes/MCP-PokeVGC-Teambuilder"
-    python_exe = f"{server_path}/.venv/Scripts/python.exe"
-    
-    try:
-        print("  Capturando output del servidor...")
-        result = subprocess.run(
-            [python_exe, "-u", "-m", "server.main"],
-            cwd=server_path,
-            capture_output=True,
-            text=True,
-            timeout=8  # Timeout corto para capturar output inicial
-        )
-        
-        print(f"CÓDIGO DE RETORNO: {result.returncode}")
-        
-        if result.stdout:
-            print("STDOUT del servidor:")
-            print("-" * 40)
-            print(result.stdout)
-            print("-" * 40)
-        
-        if result.stderr:
-            print("STDERR del servidor:")
-            print("-" * 40)
-            print(result.stderr)
-            print("-" * 40)
-        
-        return True
-        
-    except subprocess.TimeoutExpired as e:
-        print("⚠️ El servidor no terminó en 8 segundos (esto podría ser normal para servidores MCP)")
-        if e.stdout:
-            print("STDOUT capturado:")
-            print("-" * 40)
-            print(e.stdout.decode() if isinstance(e.stdout, bytes) else e.stdout)
-            print("-" * 40)
-        if e.stderr:
-            print("STDERR capturado:")
-            print("-" * 40)
-            print(e.stderr.decode() if isinstance(e.stderr, bytes) else e.stderr)
-            print("-" * 40)
-        return True
-    except Exception as e:
-        print(f"❌ Error capturando output: {e}")
-        return False
-
-def test_6_manual_mcp_test():
-    """Prueba 6: Sugerencias para prueba manual"""
-    print("\n🔍 PRUEBA 6: Instrucciones para prueba manual...")
-    
-    server_path = "C:/Users/Andy Ortega/Progras/Redes/MCP-PokeVGC-Teambuilder"
-    python_exe = f"{server_path}/.venv/Scripts/python.exe"
-    
-    print("Para probar manualmente el servidor, ejecuta estos comandos:")
+    print("=" * 60)
+    print("🧪 TEST DE DIAGNÓSTICO MCP")
+    print("=" * 60)
+    print(f"Comando: {cmd}")
+    print(f"Args: {' '.join(args)}")
+    print(f"CWD: {cwd}")
     print()
-    print("1. Abrir terminal y navegar al directorio:")
-    print(f'   cd "{server_path}"')
-    print()
-    print("2. Ejecutar el servidor:")
-    print(f'   "{python_exe}" -u -m server.main')
-    print()
-    print("3. El servidor debería:")
-    print("   - NO mostrar errores")
-    print("   - Quedarse ejecutándose (no terminar inmediatamente)")
-    print("   - Posiblemente mostrar mensajes de inicialización")
-    print()
-    print("4. Para terminar el servidor manualmente, usa Ctrl+C")
-
-def analyze_server_main():
-    """Analizar el contenido de server/main.py"""
-    print("\n🔍 ANÁLISIS: Contenido de server/main.py...")
     
-    main_file = "C:/Users/Andy Ortega/Progras/Redes/MCP-PokeVGC-Teambuilder/server/main.py"
+    # Configurar entorno
+    env = dict(os.environ)
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    if cwd:
+        env["PYTHONPATH"] = cwd
     
-    if not os.path.exists(main_file):
-        print("❌ server/main.py no existe")
-        return
-    
+    process = None
     try:
-        with open(main_file, 'r', encoding='utf-8') as f:
-            content = f.read()
+        # Paso 1: Lanzar proceso
+        print("1️⃣ Lanzando proceso servidor...")
+        process = await asyncio.create_subprocess_exec(
+            cmd, *args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+            env=env
+        )
+        print(f"   ✓ Proceso lanzado (PID: {process.pid})")
         
-        print(f"📄 Tamaño del archivo: {len(content)} caracteres")
+        # Dar tiempo al servidor para iniciar
+        await asyncio.sleep(2)
         
-        # Verificar elementos básicos de MCP
-        checks = [
-            ("import mcp", "Importa librería MCP"),
-            ("from mcp", "Importa desde MCP"),
-            ("@app.list_tools", "Decorador list_tools"),
-            ("@app.call_tool", "Decorador call_tool"),
-            ("async def", "Funciones asíncronas"),
-            ("app.run()", "Llamada a app.run()"),
-            ("if __name__", "Bloque main"),
-        ]
+        # Verificar que el proceso sigue vivo
+        if process.returncode is not None:
+            print(f"   ❌ Proceso terminó prematuramente (código: {process.returncode})")
+            stderr = await process.stderr.read()
+            print(f"   Error: {stderr.decode()}")
+            return
         
-        print("\nElementos encontrados:")
-        for pattern, description in checks:
-            if pattern in content:
-                print(f"✅ {description}")
-            else:
-                print(f"❌ {description} - Patrón '{pattern}' no encontrado")
+        print("   ✓ Proceso activo")
         
-        # Mostrar las primeras líneas
-        lines = content.split('\n')
-        print(f"\nPrimeras 10 líneas del archivo:")
-        print("-" * 40)
-        for i, line in enumerate(lines[:10], 1):
-            print(f"{i:2d}: {line}")
-        print("-" * 40)
+        # Paso 2: Enviar initialize
+        print("\n2️⃣ Enviando mensaje initialize...")
+        init_msg = {
+            "jsonrpc": "2.0",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "debug-test", "version": "1.0"}
+            },
+            "id": 1
+        }
         
-    except Exception as e:
-        print(f"❌ Error leyendo server/main.py: {e}")
-
-def main():
-    """Ejecutar todas las pruebas de diagnóstico"""
-    print("🚀 DIAGNÓSTICO COMPLETO DEL SERVIDOR MCP POKÉMON VGC")
-    print("=" * 65)
-    
-    tests = [
-        test_1_basic_paths,
-        test_2_python_environment,
-        test_3_server_syntax,
-        test_4_server_startup,
-        test_5_server_output,
-    ]
-    
-    results = []
-    for test in tests:
+        init_json = json.dumps(init_msg) + "\n"
+        print(f"   Enviando: {init_json.strip()}")
+        
+        process.stdin.write(init_json.encode())
+        await process.stdin.drain()
+        
+        # Leer respuesta con timeout
         try:
-            result = test()
-            results.append(result)
-        except Exception as e:
-            print(f"❌ Error en prueba: {e}")
-            results.append(False)
+            response_bytes = await asyncio.wait_for(
+                process.stdout.readline(), 
+                timeout=10
+            )
+            response_str = response_bytes.decode().strip()
+            print(f"   ✓ Respuesta recibida: {response_str}")
+            
+            # Parsear respuesta
+            try:
+                response_json = json.loads(response_str)
+                if response_json.get("id") == 1 and "result" in response_json:
+                    print("   ✓ Initialize exitoso")
+                else:
+                    print(f"   ❌ Respuesta inesperada: {response_json}")
+                    return
+            except json.JSONDecodeError as e:
+                print(f"   ❌ Error parseando JSON: {e}")
+                return
+                
+        except asyncio.TimeoutError:
+            print("   ❌ Timeout esperando respuesta de initialize")
+            return
+        
+        # Paso 3: Enviar initialized notification
+        print("\n3️⃣ Enviando notification initialized...")
+        initialized_msg = {
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        }
+        
+        initialized_json = json.dumps(initialized_msg) + "\n"
+        print(f"   Enviando: {initialized_json.strip()}")
+        
+        process.stdin.write(initialized_json.encode())
+        await process.stdin.drain()
+        
+        # Pausa breve (las notificaciones no tienen respuesta)
+        await asyncio.sleep(0.5)
+        print("   ✓ Notification enviada")
+        
+        # Paso 4: Enviar tools/list
+        print("\n4️⃣ Enviando tools/list...")
+        tools_msg = {
+            "jsonrpc": "2.0",
+            "method": "tools/list",
+            "params": {},
+            "id": 2
+        }
+        
+        tools_json = json.dumps(tools_msg) + "\n"
+        print(f"   Enviando: {tools_json.strip()}")
+        
+        process.stdin.write(tools_json.encode())
+        await process.stdin.drain()
+        
+        # Leer respuesta
+        try:
+            tools_response = await asyncio.wait_for(
+                process.stdout.readline(), 
+                timeout=10
+            )
+            tools_str = tools_response.decode().strip()
+            print(f"   ✓ Respuesta recibida: {tools_str[:200]}...")
+            
+            try:
+                tools_json = json.loads(tools_str)
+                if tools_json.get("id") == 2 and "result" in tools_json:
+                    tools_count = len(tools_json["result"].get("tools", []))
+                    print(f"   ✓ Tools/list exitoso - {tools_count} herramientas")
+                else:
+                    print(f"   ❌ Respuesta inesperada: {tools_json}")
+                    return
+            except json.JSONDecodeError as e:
+                print(f"   ❌ Error parseando JSON: {e}")
+                return
+                
+        except asyncio.TimeoutError:
+            print("   ❌ Timeout esperando respuesta de tools/list")
+            return
+        
+        # Paso 5: Test de herramienta
+        print("\n5️⃣ Probando herramienta suggest_team...")
+        suggest_msg = {
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {
+                "name": "suggest_team",
+                "arguments": {
+                    "format": "vgc2022",
+                    "playstyle": "trick_room",
+                    "constraints": {
+                        "strategy": {
+                            "trick_room": True
+                        }
+                    }
+                }
+            },
+            "id": 3
+        }
+        
+        suggest_json = json.dumps(suggest_msg) + "\n"
+        print(f"   Enviando: {suggest_json[:100]}...")
+        
+        process.stdin.write(suggest_json.encode())
+        await process.stdin.drain()
+        
+        try:
+            suggest_response = await asyncio.wait_for(
+                process.stdout.readline(), 
+                timeout=15
+            )
+            suggest_str = suggest_response.decode().strip()
+            print(f"   ✓ Respuesta recibida: {suggest_str[:200]}...")
+            
+            try:
+                suggest_json = json.loads(suggest_str)
+                if suggest_json.get("id") == 3 and "result" in suggest_json:
+                    print("   ✓ Herramienta ejecutada exitosamente")
+                else:
+                    print(f"   ❌ Error en herramienta: {suggest_json}")
+            except json.JSONDecodeError as e:
+                print(f"   ❌ Error parseando JSON: {e}")
+                
+        except asyncio.TimeoutError:
+            print("   ❌ Timeout esperando respuesta de herramienta")
+            return
+        
+        print("\n🎉 TODOS LOS TESTS PASARON - EL SERVIDOR MCP FUNCIONA CORRECTAMENTE")
+        print("El problema está en el código del host, no en el servidor.")
+        
+    except Exception as e:
+        print(f"❌ Error durante el test: {e}")
+        logger.exception("Error completo:")
+        
+    finally:
+        # Limpiar proceso
+        if process and process.returncode is None:
+            print(f"\n🧹 Cerrando proceso {process.pid}...")
+            try:
+                process.terminate()
+                await asyncio.wait_for(process.wait(), timeout=5)
+            except:
+                process.kill()
+            print("   ✓ Proceso cerrado")
+
+async def test_stderr_output():
+    """Test adicional para ver qué sale por stderr"""
+    cmd = "C:/Users/Andy Ortega/Progras/Redes/MCP-PokeVGC-Teambuilder/.venv/Scripts/python.exe"
+    args = ["-u", "-m", "server.main"]
+    cwd = "C:/Users/Andy Ortega/Progras/Redes/MCP-PokeVGC-Teambuilder"
     
-    # Análisis adicional
-    analyze_server_main()
-    test_6_manual_mcp_test()
+    env = dict(os.environ)
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    if cwd:
+        env["PYTHONPATH"] = cwd
     
-    print("\n" + "=" * 65)
-    print("📊 RESUMEN DE RESULTADOS:")
-    passed = sum(results)
-    total = len(results)
-    print(f"   Pruebas pasadas: {passed}/{total}")
+    print("\n" + "=" * 60)
+    print("🔍 CAPTURANDO STDERR DEL SERVIDOR")
+    print("=" * 60)
     
-    if passed == total:
-        print("✅ Todas las pruebas básicas pasaron")
-        print("   El problema podría ser en el protocolo MCP o timing")
-    else:
-        print("❌ Hay problemas básicos que deben resolverse primero")
-    
-    print("\n🔧 PRÓXIMOS PASOS RECOMENDADOS:")
-    print("1. Ejecuta la prueba manual (Prueba 6)")
-    print("2. Si el servidor falla manualmente, revisa server/main.py")
-    print("3. Si el servidor funciona manualmente, el problema es en el cliente MCP")
+    try:
+        process = await asyncio.create_subprocess_exec(
+            cmd, *args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+            env=env
+        )
+        
+        # Enviar un mensaje simple
+        init_msg = json.dumps({
+            "jsonrpc": "2.0",
+            "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test"}},
+            "id": 1
+        }) + "\n"
+        
+        process.stdin.write(init_msg.encode())
+        await process.stdin.drain()
+        
+        # Leer stderr durante 3 segundos
+        try:
+            stderr_data = await asyncio.wait_for(process.stderr.read(1024), timeout=3)
+            if stderr_data:
+                print("STDERR del servidor:")
+                print(stderr_data.decode())
+            else:
+                print("No hay output en stderr")
+        except asyncio.TimeoutError:
+            print("No hay output en stderr (timeout)")
+            
+        process.terminate()
+        await process.wait()
+        
+    except Exception as e:
+        print(f"Error capturando stderr: {e}")
 
 if __name__ == "__main__":
-    main()
+    print("Ejecutando tests de diagnóstico MCP...")
+    asyncio.run(test_mcp_connection())
+    asyncio.run(test_stderr_output())
