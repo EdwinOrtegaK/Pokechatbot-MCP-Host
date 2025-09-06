@@ -1,184 +1,184 @@
 # Pokechatbot-MCP-Host
 
-Un **host de consola** para conectar modelos (Anthropic/Claude) con un **servidor MCP (Model Context Protocol)** por **STDIO** y habilitar **herramientas** como _suggest_team_, _pool_filter_, etc. Diseñado para el proyecto de VGC Pokémon (MCP-PokeVGC-Teambuilder), con una salida limpia, nombre personalizable del bot **“🤖 Prof. Oak”** y modo _debug_ opcional.
+A **console host** to connect models (Anthropic/Claude) with an **MCP (Model Context Protocol) server** via **STDIO** and enable **tools** like _suggest_team_, _pool_filter_, etc. Designed for the Pokémon VGC project (MCP-PokeVGC-Teambuilder), with clean output, customizable bot name **“🤖 Prof. Oak”**, and optional _debug_ mode.
 
-## ✨ Características
+## ✨ Features
 
-- **Conexión MCP por STDIO** con _framing_ **Content-Length** (robusto en Windows, Linux y macOS).
-- **Descubrimiento de herramientas** vía `tools/list` y **ejecución** vía `tools/call`.
-- **Integración con Anthropic** (Claude) con soporte de **tool use**.
-- **Nombre del bot configurable** (`BOT_NAME`) y **modo debug** (`HOST_DEBUG`) para ver trazas técnicas cuando se requiera.
-- Comandos de utilidad (en modo debug): `help`, `tools`, `history`, `logs`, `quit`.
+- **MCP connection via STDIO** with **Content-Length** framing (robust on Windows, Linux, and macOS).
+- **Tool discovery** via `tools/list` and **execution** via `tools/call`.
+- **Integration with Anthropic** (Claude) with **tool use** support.
+- **Configurable bot name** (`BOT_NAME`) and **debug mode** (`HOST_DEBUG`) to see technical traces when required.
+- Utility commands (in debug mode): `help`, `tools`, `history`, `logs`, `quit`.
 
-> Scope: este README cubre solo el host (`Pokechatbot‑MCP‑Host`). El servidor MCP (por ejemplo, `MCP-PokeVGC-Teambuilder`) se configura externamente y se lanza como subproceso.
+> Scope: this README only covers the host (`Pokechatbot‑MCP‑Host`). The MCP server (e.g., `MCP-PokeVGC-Teambuilder`) is configured externally and launched as a subprocess.
 
-## 🧱 Arquitectura (vista rápida)
+## 🧱 Architecture (quick view)
 
 ```
 ┌────────────────────────┐
-│  Pokechatbot-MCP-Host  │   ← CLI (este repo)
+│  Pokechatbot-MCP-Host  │   ← CLI (this repo)
 │  (src/host/cli.py)     │
 └───────────┬────────────┘
             │ STDIO (Content-Length)
             ▼
 ┌────────────────────────┐
-│   Servidor MCP (externo) │  ← p. ej. MCP-PokeVGC-Teambuilder
+│   MCP Server (external)  │  ← e.g. MCP-PokeVGC-Teambuilder
 │   tools: suggest_team,   │
 │          pool_filter, …  │
 └────────────────────────┘
             ▲
-            │ HTTP (API Anthropic)
+            │ HTTP (Anthropic API)
             ▼
 ┌────────────────────────┐
 │     Anthropic/Claude    │
 └────────────────────────┘
 ```
 
-Flujo a alto nivel:
-1. El host lee configuración de `.env` y levanta el **servidor MCP** por STDIO.
-2. Negocia MCP: `initialize` → `initialized` → `tools/list`.
-3. Al chatear, envía el historial + catálogo de **tools** a Claude.
-4. Si Claude decide usar una herramienta, el host llama **`tools/call`** al servidor MCP y devuelve el resultado al usuario.
+High-level flow:
+1. The host reads configuration from `.env` and launches the **MCP server** via STDIO.
+2. Negotiates MCP: `initialize` → `initialized` → `tools/list`.
+3. When chatting, it sends the history + catalog of **tools** to Claude.
+4. If Claude decides to use a tool, the host calls **`tools/call`** to the MCP server and returns the result to the user.
 
-## ⚙️ Configuración
+## ⚙️ Configuration
 
-Crea un archivo **`.env`** en la raíz del proyecto con, al menos:
+Create a **`.env`** file at the project root with at least:
 
 ```dotenv
-# Clave de Anthropic
+# Anthropic key
 ANTHROPIC_API_KEY=sk-ant-...
 
-# Cómo lanzar el servidor MCP (ejemplos de Windows)
-CUSTOM_MCP_SERVER_CMD=C:/ruta/a/tu/venv/Scripts/python.exe
+# How to launch the MCP server (Windows examples)
+CUSTOM_MCP_SERVER_CMD=C:/path/to/venv/Scripts/python.exe
 CUSTOM_MCP_SERVER_ARGS=-u -m server.main
-CUSTOM_MCP_CWD=C:/ruta/a/MCP-PokeVGC-Teambuilder
+CUSTOM_MCP_CWD=C:/path/to/MCP-PokeVGC-Teambuilder
 ```
 
-**Variables soportadas**
+**Supported variables**
 
-- `ANTHROPIC_API_KEY` — Tu clave de Anthropic.
-- `CUSTOM_MCP_SERVER_CMD` — Ejecutable que inicia el servidor MCP (p. ej., el `python` del venv del servidor).
-- `CUSTOM_MCP_SERVER_ARGS` — Argumentos para iniciar el servidor (p. ej., `-u -m server.main`).
-- `CUSTOM_MCP_CWD` — Directorio de trabajo donde vive el servidor MCP.
-- `BOT_NAME` — Nombre que verás en la consola al responder (por defecto: `🤖 Prof. Oak`).
-- `HOST_DEBUG` — `1` para modo depuración (muestra herramientas, logs y JSONs útiles), `0` para modo limpio.
+- `ANTHROPIC_API_KEY` — Your Anthropic key.
+- `CUSTOM_MCP_SERVER_CMD` — Executable that starts the MCP server (e.g., the `python` of the server’s venv).
+- `CUSTOM_MCP_SERVER_ARGS` — Arguments to start the server (e.g., `-u -m server.main`).
+- `CUSTOM_MCP_CWD` — Working directory where the MCP server lives.
+- `BOT_NAME` — Name shown in the console when responding (default: `🤖 Prof. Oak`).
+- `HOST_DEBUG` — `1` for debug mode (shows tools, logs, and useful JSONs), `0` for clean mode.
 
-## 🚀 Instalación
+## 🚀 Installation
 
-1. Clona el repositorio:
+1. Clone the repository:
 
 ```bash
 git clone <repository-url>
 cd Pokechatbot-MCP-Host
 ```
 
-2. Crea y activa un entorno virtual:
+2. Create and activate a virtual environment:
 
 ```bash
 python -m venv .venv
 
-# En Linux/macOS
+# On Linux/macOS
 source .venv/bin/activate
 
-# En Windows (PowerShell)
+# On Windows (PowerShell)
 .venv\Scripts\activate
 ```
 
-3. Instala dependencias:
+3. Install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## ▶️ Ejecución
-En raiz del proyecto
+## ▶️ Execution
+From the project root:
 ```bash
 python -m src.host.cli
 ```
 
-Salida esperada (modo **no debug**, estilizada):
+Expected output (in **non-debug** mode, styled):
 
 ```
 🚀 Poke VGC — MCP Host
 ============================================================
 
-⚙️  Configurando servidores MCP...
+⚙️  Configuring MCP servers...
 
-✓ Servidor MCP 'PokeChatbot VGC' agregado: Servidor MCP para construcción de equipos Pokémon VGC
+✓ MCP server 'PokeChatbot VGC' added: MCP server for Pokémon VGC team building
 
-🔌 Conectando a servidores MCP...
+🔌 Connecting to MCP servers...
 
-✅ Conectado a Servidor MCP para construcción de equipos Pokémon VGC (5 herramientas)
+✅ Connected to MCP server for Pokémon VGC team building (5 tools)
 
-📊 Resumen: 1/1 servidores conectados
+📊 Summary: 1/1 servers connected
 
-📡 Servidor: PokeChatbot VGC
+📡 Server: PokeChatbot VGC
 
-✅ ¡Host listo!
+✅ Host ready!
 
-💭 Escribe tu mensaje para empezar...
+💭 Type your message to start...
 
-👤 Entrenador: (Ingresa lo que quieras preguntar)
+👤 Trainer: (Type whatever you want to ask)
 
-🤖 Prof. Oak: ¡Excelente! Aquí tienes ...
+🤖 Prof. Oak: Excellent! Here you go ...
 ```
 
-**Comandos útiles** (cuando `HOST_DEBUG=1`):
-- `help` — Muestra ayuda.
-- `tools` — Lista herramientas MCP detectadas.
-- `history` — Muestra el historial de conversación enviado a Claude.
-- `logs` — Muestra `mcp_interactions.log`.
-- `quit` — Sale del host.
+**Useful commands** (when `HOST_DEBUG=1`):
+- `help` — Show help.
+- `tools` — List detected MCP tools.
+- `history` — Show conversation history sent to Claude.
+- `logs` — Show `mcp_interactions.log`.
+- `quit` — Exit the host.
 
-## 🔍 Modo Debug (HOST_DEBUG=1)
+## 🔍 Debug Mode (HOST_DEBUG=1)
 
-Actívalo para ver:
-- Lanzamiento y conexión (`initialize`, `tools/list`).
-- Herramientas registradas.
-- Llamadas a herramientas (`tools/call`) y tiempos de espera.
-- Posibles errores o _stderr_ del servidor MCP.
+Enable it to see:
+- Launch and connection (`initialize`, `tools/list`).
+- Registered tools.
+- Tool calls (`tools/call`) and timeouts.
+- Possible errors or MCP server _stderr_.
 
-Esto es ideal para diagnosticar por qué una herramienta no responde o si hay inconsistencias en el framing MCP.
+This is ideal for diagnosing why a tool does not respond or if there are inconsistencies in MCP framing.
 
-## 🧠 Notas de implementación
+## 🧠 Implementation notes
 
-- El host usa un lector **line-based** para MCP (evita problemas con `peek()` en Windows).
-- `mcp_interactions.log` registra las interacciones (consola silenciosa si `HOST_DEBUG=0`).
-- Se puede personalizar el nombre del bot con `BOT_NAME` (por defecto “🤖 Prof. Oak”).
-- En producción, la consola **no muestra JSONs** ni trazas, solo mensajes amables para el usuario final.
+- The host uses a **line-based** reader for MCP (avoids issues with `peek()` on Windows).
+- `mcp_interactions.log` records the interactions (silent console if `HOST_DEBUG=0`).
+- The bot name can be customized with `BOT_NAME` (default “🤖 Prof. Oak”).
+- In production, the console **does not show JSONs** or traces, only user-friendly messages.
 
-## 🧰 Solución de problemas (FAQ)
+## 🧰 Troubleshooting (FAQ)
 
 ### 1) `invalid_request_error: tools.*.name: String should match pattern '^[a-zA-Z0-9_-]{1,128}$'`
-Claude requiere que el nombre de cada tool **no tenga espacios** ni caracteres fuera de `[A-Za-z0-9_-]`. Si ves este error:
-- Asegúrate de que **el nombre compuesto** de la herramienta que envías a Anthropic no incluya espacios.
-- Recomendación: evita espacios en el **nombre del servidor** o ajusta el código para **sanitizar** (reemplazar espacios por `_` o `-`).
+Claude requires each tool name to **not contain spaces** or characters outside `[A-Za-z0-9_-]`. If you see this error:
+- Make sure the **composite name** of the tool you send to Anthropic does not include spaces.
+- Recommendation: avoid spaces in the **server name** or adjust the code to **sanitize** (replace spaces with `_` or `-`).
 
-### 2) “initialize sin respuesta válida” / timeouts
-- Verifica rutas en `.env`: `CUSTOM_MCP_SERVER_CMD` y `CUSTOM_MCP_CWD`.
-- Ejecuta el servidor MCP manualmente para confirmar que inicia sin errores.
-- Activa `HOST_DEBUG=1` para ver `stderr` del servidor en la consola.
+### 2) “initialize without valid response” / timeouts
+- Check paths in `.env`: `CUSTOM_MCP_SERVER_CMD` and `CUSTOM_MCP_CWD`.
+- Run the MCP server manually to confirm it starts without errors.
+- Enable `HOST_DEBUG=1` to see the server’s `stderr` in the console.
 
-### 3) No aparecen herramientas
-- Confirma que el servidor MCP responde a `tools/list`.
-- Activa `HOST_DEBUG=1` para ver el payload de tools y asegurarte de que tengan `name`, `description`, `inputSchema`.
+### 3) Tools not showing up
+- Confirm that the MCP server responds to `tools/list`.
+- Enable `HOST_DEBUG=1` to see the tools payload and ensure they have `name`, `description`, `inputSchema`.
 
-### 4) 401 / problemas con Anthropic
-- Confirma `ANTHROPIC_API_KEY` en `.env` y que tu cuenta tenga acceso al modelo en uso.
-- Reintenta con otro modelo soportado si tu suscripción no incluye el configurado.
+### 4) 401 / Anthropic issues
+- Confirm `ANTHROPIC_API_KEY` in `.env` and that your account has access to the model in use.
+- Retry with another supported model if your subscription does not include the configured one.
 
-### 5) Caracteres raros o codificación
-- El host fuerza `PYTHONUNBUFFERED=1` y `PYTHONIOENCODING=utf-8` al lanzar el servidor MCP.
-- Si tu servidor MCP imprime binarios por `stdout`, puede romper el framing — imprime solo JSON/UTF-8 por `stdout`.
+### 5) Strange characters or encoding issues
+- The host enforces `PYTHONUNBUFFERED=1` and `PYTHONIOENCODING=utf-8` when launching the MCP server.
+- If your MCP server prints binaries to `stdout`, it may break framing — only print JSON/UTF-8 to `stdout`.
 
-## 🗂️ Estructura relevante
+## 🗂️ Relevant structure
 
 ```
 src/
 └─ host/
-   └─ cli.py           ← Punto de entrada del host (este archivo)
+   └─ cli.py           ← Host entry point (this file)
 tests/
-└─ debug_server_script.py (opcional, si lo usas en tu flujo)
-mcp_interactions.log   ← Log de interacciones (generado en runtime)
-.env.example           ← (sugerido) ejemplo de variables de entorno
+└─ debug_server_script.py (optional, if you use it in your flow)
+mcp_interactions.log   ← Interaction log (generated at runtime)
+.env.example           ← (suggested) example of environment variables
 ```
