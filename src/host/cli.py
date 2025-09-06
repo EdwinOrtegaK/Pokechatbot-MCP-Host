@@ -7,6 +7,7 @@ import subprocess
 import sys
 import os
 import re
+import shlex
 from datetime import datetime
 from dotenv import load_dotenv
 import threading
@@ -256,6 +257,71 @@ class ManualMCPConnection:
             except Exception:
                 pass
 
+# Cliente HTTP MCP (simple)
+# Cliente HTTP MCP (robusto)
+import aiohttp
+
+class HttpMCPConnection:
+    def __init__(self, base_url: str, headers: Optional[dict] = None):
+        self.base_url = base_url.rstrip("/")
+        # Headers por defecto + opcionales
+        base_headers = {"Content-Type": "application/json"}
+        if headers:
+            base_headers.update(headers)
+        self._headers = base_headers
+
+        self._session: Optional[aiohttp.ClientSession] = None
+        # Mantener conexiones vivas un poco más para evitar desconexiones
+        self._connector = aiohttp.TCPConnector(keepalive_timeout=30)
+
+    async def _ensure(self):
+        if self._session is None or getattr(self._session, "closed", False):
+            timeout = aiohttp.ClientTimeout(total=30)
+            connector = aiohttp.TCPConnector(keepalive_timeout=30, limit=50)
+            default_headers = {"Content-Type": "application/json"}
+            default_headers.update(self._headers)
+            self._session = aiohttp.ClientSession(
+                headers=default_headers,
+                timeout=timeout,
+                connector=connector
+            )
+
+    async def _post(self, payload: dict, timeout: float):
+        await self._ensure()
+        async with self._session.post(self.base_url, json=payload, timeout=timeout) as r:
+            # Levanta si no es 2xx
+            r.raise_for_status()
+            return await r.json()
+
+    async def initialize(self, protocol_version: str = "2025-06-18", client_info: Optional[dict] = None, timeout: float = 20.0):
+        payload = {
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": protocol_version,
+                "capabilities": {},
+                "clientInfo": client_info or {"name": "pokevgc-host", "version": "1.0.0"},
+            },
+        }
+        return await self._post(payload, timeout)
+
+    async def list_tools(self, timeout: float = 20.0):
+        payload = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+        return await self._post(payload, timeout)
+
+    async def call_tool(self, name: str, arguments: dict, timeout: float = 30.0):
+        payload = {
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": name, "arguments": arguments},
+        }
+        return await self._post(payload, timeout)
+
+    async def close(self):
+        if self._session:
+            try:
+                await self._session.close()
+            finally:
+                self._session = None
+
 class MCPChatbot:
     """Chatbot principal que actúa como host MCP"""
     
@@ -263,7 +329,7 @@ class MCPChatbot:
         self.anthropic_client = anthropic.Anthropic(api_key=anthropic_api_key)
         self.conversation_history: List[Dict[str, str]] = []
         self.mcp_servers: Dict[str, MCPServer] = {}
-        self.active_sessions: Dict[str, ManualMCPConnection] = {}
+        self.active_sessions: Dict[str, Any] = {} 
         self.available_tools: Dict[str, Any] = {}
         self.logger = MCPLogger()
         self.conversation_history.append({
@@ -285,6 +351,47 @@ class MCPChatbot:
 
     async def _connect_to_single_server(self, name: str, server: MCPServer):
         """Conecta usando framing manual (Content-Length) para evitar timeouts del stdio_client."""
+        # Rama HTTP
+        if server.command == "HTTP":
+            base_url = server.args[0] if server.args else ""
+            bearer = os.getenv("MCP_REMOTE_HTTP_BEARER", "").strip()
+            headers = {"Authorization": f"Bearer {bearer}"} if bearer else None
+
+            conn = HttpMCPConnection(base_url, headers=headers)
+
+            # initialize (HTTP es asíncrono)
+            init_resp = await conn.initialize()
+            # tools/list
+            tools_resp = await conn.list_tools()
+            tools = (tools_resp or {}).get("result", {}).get("tools", []) or []
+
+            # Guardar conexión
+            self.active_sessions[name] = conn
+
+            # Registrar herramientas
+            server_tools = 0
+            for t in tools:
+                key = f"{name}_{t.get('name')}"
+                self.available_tools[key] = {
+                    "name": t.get("name"),
+                    "description": t.get("description") or "",
+                    "server": name,
+                    "schema": t.get("inputSchema", {"type": "object", "properties": {}, "required": []}),
+                }
+                server_tools += 1
+                if HOST_DEBUG:
+                    print(f"    → {t.get('name')}: {t.get('description') or 'Sin descripción'}")
+
+            etiqueta = server.description or name
+            print(f"\n✅ Conectado a {etiqueta} ({server_tools} herramientas)\n")
+            self.logger.log_interaction(name, "CONNECT", {
+                "status": "success",
+                "tools_count": server_tools,
+                "tools": [t.get("name") for t in tools],
+            })
+            return
+
+        # Rama STDIO
         if HOST_DEBUG:
             print(f"→ Lanzando: {server.command} {' '.join(server.args)}")
             if server.cwd:
@@ -347,7 +454,8 @@ class MCPChatbot:
                 "schema": t.get("inputSchema", {"type":"object","properties":{},"required":[]})
             }
             server_tools += 1
-            print(f"    → {t.get('name')}: {t.get('description') or 'Sin descripción'}")
+            if HOST_DEBUG:
+                print(f"    → {t.get('name')}: {t.get('description') or 'Sin descripción'}")
 
         self.logger.log_interaction(name, "CONNECT", {
             "status": "success",
@@ -385,7 +493,7 @@ class MCPChatbot:
                 await self._connect_to_single_server(name, server)
                 successful_connections += 1
             except Exception as e:
-                print(f"❌ Error conectando a '{name}': {e}")
+                print(f"❌ Error conectando a '{name}': {e}\n")
                 self.logger.log_interaction(name, "CONNECT_ERROR", str(e))
         
         print(f"📊 Resumen: {successful_connections}/{len(self.mcp_servers)} servidores conectados")
@@ -404,10 +512,39 @@ class MCPChatbot:
                 {"tool": tool_name, "arguments": arguments}
             )
 
-            resp = await asyncio.wait_for(
-                asyncio.get_event_loop().run_in_executor(None, lambda: conn.call_tool(tool_name, arguments)),
-                timeout=30  
-            )
+            # HTTP: métodos async; STDIO: sync a executor
+            async def _do_call():
+                if isinstance(conn, HttpMCPConnection):
+                    return await conn.call_tool(tool_name, arguments, timeout=30)
+                return await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: conn.call_tool(tool_name, arguments)
+                )
+            
+            # Primer intento
+            try:
+                resp = await asyncio.wait_for(_do_call(), timeout=35)
+
+            except asyncio.TimeoutError as te:
+                if isinstance(conn, HttpMCPConnection):
+                    try:
+                        await conn.close()
+                        await conn.initialize()
+                        resp = await asyncio.wait_for(_do_call(), timeout=35)
+                    except Exception as e2:
+                        raise e2
+                else:
+                    raise te
+                
+            except Exception as e:
+                if isinstance(conn, HttpMCPConnection):
+                    try:
+                        await conn.close()
+                        await conn.initialize()
+                        resp = await asyncio.wait_for(_do_call(), timeout=35)
+                    except Exception as e2:
+                        raise e2
+                else:
+                    raise e
 
             # Log sólo a archivo
             self.logger.log_interaction(
@@ -421,17 +558,14 @@ class MCPChatbot:
             return resp
         
         except asyncio.TimeoutError:
-            err_snip = ""
+            error_msg = f"⏰ Tiempo agotado en {tool_name}"
             if HOST_DEBUG:
                 try:
                     err_snip = self.active_sessions[server_name].read_stderr_snapshot()
+                    if err_snip.strip():
+                        error_msg += f"\n[stderr]\n{err_snip}"
                 except Exception:
                     pass
-
-            error_msg = f"⏰ Tiempo agotado en {tool_name}"
-            if HOST_DEBUG and err_snip.strip():
-                error_msg += f"\n[stderr]\n{err_snip}"
-
             print(error_msg)
             self.logger.log_interaction(server_name, "TOOL_ERROR", error_msg)
             return {"error": error_msg}
@@ -640,12 +774,15 @@ class MCPChatbot:
         if not self.active_sessions and not hasattr(self, "_ctx_managers"):
             return
             
-        print("\n🔌 Desconectando servidores MCP...")
+        print("\n🔌 Desconectando servidores MCP...\n")
         
         # Cierra sesiones
         for name, conn in list(self.active_sessions.items()):
             try:
-                conn.close()
+                if isinstance(conn, HttpMCPConnection):
+                    await conn.close()
+                else:
+                    conn.close()
                 print(f"✓ Desconectado de '{name}'\n")
             except Exception as e:
                 print(f"⚠️  Error desconectando '{name}': {str(e)}")        
@@ -689,8 +826,21 @@ async def main():
         cwd=custom_cwd or None,
         description="Servidor MCP para construcción de equipos Pokémon VGC"
     )
-    
+
     chatbot.add_mcp_server(custom_server)
+
+    # Registrar servidor MCP por HTTP si hay URL en .env
+    remote_http_url = os.getenv("MCP_REMOTE_HTTP_URL", "").strip()
+    if remote_http_url:
+        remote_name = os.getenv("MCP_REMOTE_HTTP_NAME", "VGC HTTP Remote").strip()
+        http_server = MCPServer(
+            name=remote_name,
+            command="HTTP",
+            args=[remote_http_url],
+            cwd=None,
+            description="Servidor MCP remoto (HTTP)"
+        )
+        chatbot.add_mcp_server(http_server)
     
     try:
         # Conectar a servidores MCP
@@ -716,7 +866,7 @@ async def main():
         # Loop principal del chat
         while True:
             try:
-                user_input = input("👤 Entrenador: \n").strip()
+                user_input = input("👤 Entrenador: ").strip()
                 if not user_input:
                     continue
                 
@@ -743,9 +893,32 @@ async def main():
                     chatbot.logger.show_logs()
                     continue
                 
+                if user_lower.startswith("call "):
+                    try:
+                        tokens = shlex.split(user_input)
+                        if len(tokens) < 3:
+                            print("Uso: call <SERVER_NAME> <TOOL_NAME> [JSON_ARGS]\n")
+                            continue
+
+                        _, server_name, tool_name, *rest = tokens
+                        json_args = {}
+                        if rest:
+                            try:
+                                json_args = json.loads(rest[0])
+                            except json.JSONDecodeError:
+                                print('JSON_ARGS inválido. Ejemplo: {"text":"Hola"}\n')
+                                continue
+
+                        resp = await chatbot.call_mcp_tool(server_name, tool_name, json_args)
+                        print()
+                        print(f"{BOT_NAME}: {resp}\n")
+                    except Exception as e:
+                        print(f"Error ejecutando call: {e}\n")
+                    continue
 
                 # Procesar mensaje normal
                 response = await chatbot.chat(user_input)
+                print()
                 print(f"{BOT_NAME}: {response}\n")
                 
             except KeyboardInterrupt:
