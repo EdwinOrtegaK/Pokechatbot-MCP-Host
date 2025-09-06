@@ -6,10 +6,16 @@ from dataclasses import dataclass
 import subprocess
 import sys
 import os
+import re
 from datetime import datetime
 from dotenv import load_dotenv
 import threading
 from collections import deque
+
+# Apariencia y modo debug
+BOT_NAME = os.getenv("BOT_NAME", "🤖 Prof. Oak")
+HOST_DEBUG = os.getenv("HOST_DEBUG", "0") == "1"
+
 
 # Instalar dependencias necesarias
 def install_dependencies():
@@ -65,9 +71,11 @@ class MCPLogger:
             format='%(asctime)s - %(levelname)s - %(message)s',
             handlers=[
                 logging.FileHandler(log_file),
-                logging.StreamHandler()
+                logging.StreamHandler() if HOST_DEBUG else logging.NullHandler()
             ]
         )
+        if not HOST_DEBUG:
+            logging.getLogger().setLevel(logging.CRITICAL)
         self.logger = logging.getLogger(__name__)
     
     def log_interaction(self, server_name: str, interaction_type: str, data: Any):
@@ -258,6 +266,13 @@ class MCPChatbot:
         self.active_sessions: Dict[str, ManualMCPConnection] = {}
         self.available_tools: Dict[str, Any] = {}
         self.logger = MCPLogger()
+        self.conversation_history.append({
+            "role": "user",
+            "content": "Eres Prof. Oak, un mentor amable de VGC. Responde de forma breve, clara y útil."
+        })
+
+    def _sanitize_tool_name(self, s: str) -> str:
+        return re.sub(r'[^a-zA-Z0-9_-]', '_', s)[:128]
         
     def add_mcp_server(self, server: MCPServer):
         entry = server.args[-1] if server.args else ""
@@ -270,11 +285,13 @@ class MCPChatbot:
 
     async def _connect_to_single_server(self, name: str, server: MCPServer):
         """Conecta usando framing manual (Content-Length) para evitar timeouts del stdio_client."""
-        print(f"→ Lanzando: {server.command} {' '.join(server.args)}")
-        if server.cwd:
-            print(f"  cwd: {server.cwd}")
+        if HOST_DEBUG:
+            print(f"→ Lanzando: {server.command} {' '.join(server.args)}")
+            if server.cwd:
+                print(f"  cwd: {server.cwd}")
+            print("  Inicializando sesión MCP (manual framing)...")
 
-        # Entorno del proceso hijo (desbloquear buffering y setear encoding)
+        # Entorno del proceso hijo
         child_env = dict(os.environ)
         child_env["PYTHONUNBUFFERED"] = "1"
         child_env["PYTHONIOENCODING"] = "utf-8"
@@ -283,33 +300,38 @@ class MCPChatbot:
         conn = ManualMCPConnection(server.command, server.args, cwd=server.cwd, env=child_env)
 
         # initialize
-        print("  Inicializando sesión MCP (manual framing)...")
         try:
             init_resp = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: conn.initialize(timeout=60)
             )
-            print(f"  ✓ Sesión inicializada: {init_resp.get('result', {})}")
-        except Exception as e:
-            err_snip = ""
-            try:
-                err_snip = conn.read_stderr_snapshot()
-            except Exception:
-                pass
-            print("  ❌ Falló initialize")
-            if err_snip.strip():
-                print("  [stderr del servidor]\n" + err_snip)
+            if HOST_DEBUG:
+                print("  ✓ Sesión inicializada")
+        except Exception:
+            
+            if HOST_DEBUG:
+                err_snip = ""
+                try:
+                    err_snip = conn.read_stderr_snapshot()
+                except Exception:
+                    pass
+                print("  ❌ Falló initialize")
+                if err_snip.strip():
+                    print("  [stderr del servidor]\n" + err_snip)
             raise
 
         # tools/list
-        print("  Obteniendo herramientas (manual framing)...")
+        if HOST_DEBUG:
+            print("  Obteniendo herramientas (manual framing)...")
+
         tools_resp = await asyncio.get_event_loop().run_in_executor(None, conn.list_tools)
         tools = (tools_resp or {}).get("result", {}).get("tools", []) or []
-        print(f"  ✓ Herramientas obtenidas: {len(tools)}")
 
-        err = conn.read_stderr_snapshot()
-        if err.strip():
-            print("\n[stderr del servidor]")
-            print(err)
+        if HOST_DEBUG:
+            print(f"  ✓ Herramientas obtenidas: {len(tools)}")
+            err = conn.read_stderr_snapshot()
+            if err.strip():
+                print("\n[stderr del servidor]")
+                print(err)
 
         # Guardar conexión
         self.active_sessions[name] = conn
@@ -332,7 +354,9 @@ class MCPChatbot:
             "tools_count": server_tools,
             "tools": [t.get("name") for t in tools]
         })
-        print(f"✅ Conectado a '{name}' - {server_tools} herramientas disponibles\n")
+
+        etiqueta = server.description or name
+        print(f"\n✅ Conectado a {etiqueta} ({server_tools} herramientas)\n")
 
     async def _safe_cleanup(self, ctx, session):    
         """Limpia recursos de manera segura"""
@@ -353,7 +377,7 @@ class MCPChatbot:
             print("⚠️  No hay servidores MCP configurados")
             return
             
-        print("\n🔌 Conectando a servidores MCP...")
+        print("\n🔌 Conectando a servidores MCP...\n")
         successful_connections = 0
         
         for name, server in self.mcp_servers.items():
@@ -374,43 +398,74 @@ class MCPChatbot:
 
             conn = self.active_sessions[server_name]
 
-            self.logger.log_interaction(server_name, "TOOL_CALL", {"tool": tool_name, "arguments": arguments})
-            print(f"🔧 Llamando herramienta '{tool_name}' en servidor '{server_name}'...")
+            # Log a archivo
+            self.logger.log_interaction(
+                server_name, "TOOL_CALL",
+                {"tool": tool_name, "arguments": arguments}
+            )
 
             resp = await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(None, lambda: conn.call_tool(tool_name, arguments)),
                 timeout=30  
             )
-            self.logger.log_interaction(server_name, "TOOL_RESPONSE", {"tool": tool_name, "result": str(resp)[:500]})
+
+            # Log sólo a archivo
+            self.logger.log_interaction(
+                server_name, "TOOL_RESPONSE",
+                {"tool": tool_name, "result": str(resp)[:500]}
+            )
+
+            if HOST_DEBUG:
+                print(f"   ✓ {tool_name} listo")
 
             return resp
         
         except asyncio.TimeoutError:
             err_snip = ""
-            try:
-                err_snip = self.active_sessions[server_name].read_stderr_snapshot()
-            except Exception:
-                pass
-            error_msg = f"Timeout llamando herramienta '{tool_name}' en '{server_name}'"
-            if err_snip.strip():
+            if HOST_DEBUG:
+                try:
+                    err_snip = self.active_sessions[server_name].read_stderr_snapshot()
+                except Exception:
+                    pass
+
+            error_msg = f"⏰ Tiempo agotado en {tool_name}"
+            if HOST_DEBUG and err_snip.strip():
                 error_msg += f"\n[stderr]\n{err_snip}"
-            print(f"⏰ {error_msg}")
+
+            print(error_msg)
             self.logger.log_interaction(server_name, "TOOL_ERROR", error_msg)
             return {"error": error_msg}
 
         except Exception as e:
-            error_msg = f"Error llamando herramienta '{tool_name}' en '{server_name}': {str(e)}"
-            print(f"❌ {error_msg}")
+            error_msg = f"❌ Error en {tool_name}: {str(e)}"
+
+            if HOST_DEBUG:
+                try:
+                    err_snip = self.active_sessions[server_name].read_stderr_snapshot()
+                    if err_snip.strip():
+                        error_msg += f"\n[stderr]\n{err_snip}"
+                except Exception:
+                    pass
+
+            print(error_msg)
             self.logger.log_interaction(server_name, "TOOL_ERROR", error_msg)
             return {"error": error_msg}
     
     def format_tools_for_anthropic(self) -> List[Dict[str, Any]]:
-        """Formatea las herramientas MCP para usar con Anthropic"""
+        """Formatea las herramientas MCP para usar con Anthropic (sin caracteres inválidos)."""
         anthropic_tools = []
-        
+        self.tool_name_map: Dict[str, Dict[str, str]] = {}
+
         for tool_key, tool_info in self.available_tools.items():
+            sanitized = self._sanitize_tool_name(tool_key)
+
+            self.tool_name_map[sanitized] = {
+                "server": tool_info["server"],
+                "name": tool_info["name"],
+            }
+
             anthropic_tool = {
-                "name": tool_key,
+                "name": sanitized,
                 "description": tool_info["description"],
                 "input_schema": tool_info.get("schema", {
                     "type": "object",
@@ -419,38 +474,43 @@ class MCPChatbot:
                 })
             }
             anthropic_tools.append(anthropic_tool)
-        
+
         return anthropic_tools
+
     
     async def process_tool_calls(self, tool_calls: List[Any]) -> List[Dict[str, Any]]:
-        """Procesa las llamadas a herramientas solicitadas por Anthropic"""
+        """Procesa las llamadas a herramientas solicitadas por Anthropic."""
         tool_results = []
-        
+
         for tool_call in tool_calls:
             tool_name = tool_call.name
             tool_input = tool_call.input
-            
-            # Encontrar el servidor correspondiente
-            if tool_name in self.available_tools:
-                tool_info = self.available_tools[tool_name]
-                server_name = tool_info["server"]
-                actual_tool_name = tool_info["name"]
-                
-                # Llamar a la herramienta
-                result = await self.call_mcp_tool(server_name, actual_tool_name, tool_input)
-                
-                tool_results.append({
-                    "tool_use_id": tool_call.id,
-                    "type": "tool_result",
-                    "content": str(result)
-                })
+
+            if hasattr(self, "tool_name_map") and tool_name in self.tool_name_map:
+                server_name = self.tool_name_map[tool_name]["server"]
+                actual_tool_name = self.tool_name_map[tool_name]["name"]
             else:
-                tool_results.append({
-                    "tool_use_id": tool_call.id,
-                    "type": "tool_result",
-                    "content": f"Error: Herramienta '{tool_name}' no encontrada"
-                })
-        
+                # Fallback (por si acaso): intenta buscar por clave “legacy”
+                if tool_name in self.available_tools:
+                    tool_info = self.available_tools[tool_name]
+                    server_name = tool_info["server"]
+                    actual_tool_name = tool_info["name"]
+                else:
+                    tool_results.append({
+                        "tool_use_id": tool_call.id,
+                        "type": "tool_result",
+                        "content": f"Error: Herramienta '{tool_name}' no encontrada"
+                    })
+                    continue
+
+            result = await self.call_mcp_tool(server_name, actual_tool_name, tool_input)
+
+            tool_results.append({
+                "tool_use_id": tool_call.id,
+                "type": "tool_result",
+                "content": str(result)
+            })
+
         return tool_results
     
     async def chat(self, user_message: str) -> str:
@@ -465,7 +525,8 @@ class MCPChatbot:
             # Preparar herramientas para Anthropic
             tools = self.format_tools_for_anthropic()
             
-            print(f"🤖 Consultando Claude con {len(tools)} herramientas disponibles...")
+            if HOST_DEBUG:
+                print(f"🤖 Consultando Claude con {len(tools)} herramientas disponibles...")
             
             # Llamar a Anthropic
             response = self.anthropic_client.messages.create(
@@ -487,42 +548,42 @@ class MCPChatbot:
             
             # Si hay llamadas a herramientas, procesarlas
             if tool_calls:
-                print(f"🔧 Procesando {len(tool_calls)} llamadas a herramientas...")
-                
-                # Agregar la respuesta con tool calls al historial
+                if HOST_DEBUG:
+                    print(f"🔧 Procesando {len(tool_calls)} llamadas a herramientas...")
+
                 self.conversation_history.append({
                     "role": "assistant",
                     "content": response.content
                 })
-                
+
                 # Procesar herramientas
                 tool_results = await self.process_tool_calls(tool_calls)
-                
+
                 # Agregar resultados de herramientas al historial
                 self.conversation_history.append({
                     "role": "user",
                     "content": tool_results
                 })
-                
+
                 # Obtener respuesta final
                 final_response = self.anthropic_client.messages.create(
                     model="claude-sonnet-4-20250514",
                     max_tokens=4000,
                     messages=self.conversation_history,
-                    tools=tools
+                    tools=self.format_tools_for_anthropic()
                 )
-                
+
                 final_content = ""
                 for content_block in final_response.content:
                     if content_block.type == "text":
                         final_content += content_block.text
-                
+
                 # Agregar respuesta final al historial
                 self.conversation_history.append({
                     "role": "assistant",
                     "content": final_content
                 })
-                
+
                 return final_content
             else:
                 # No hay herramientas, respuesta directa
@@ -543,9 +604,6 @@ class MCPChatbot:
             print("⚠️  No hay herramientas MCP disponibles")
             return
         
-        print("\n🛠️  HERRAMIENTAS MCP DISPONIBLES:")
-        print("=" * 50)
-        
         by_server = {}
         for tool_key, tool_info in self.available_tools.items():
             server = tool_info['server']
@@ -555,8 +613,6 @@ class MCPChatbot:
         
         for server_name, tools in by_server.items():
             print(f"\n📡 Servidor: {server_name}")
-            for tool in tools:
-                print(f"   • {tool['name']}: {tool['description']}")
         print()
     
     def show_conversation_history(self):
@@ -590,7 +646,7 @@ class MCPChatbot:
         for name, conn in list(self.active_sessions.items()):
             try:
                 conn.close()
-                print(f"✓ Desconectado de '{name}'")
+                print(f"✓ Desconectado de '{name}'\n")
             except Exception as e:
                 print(f"⚠️  Error desconectando '{name}': {str(e)}")        
         self.active_sessions.clear()
@@ -614,7 +670,7 @@ async def main():
     chatbot = MCPChatbot(api_key)
     
     # Configuración del servidor MCP personalizado desde .env
-    print("\n⚙️  Configurando servidores MCP...")
+    print("\n⚙️  Configurando servidores MCP...\n")
     
     custom_cmd = os.getenv("CUSTOM_MCP_SERVER_CMD", "python")
     custom_args = os.getenv("CUSTOM_MCP_SERVER_ARGS", "").strip()
@@ -627,7 +683,7 @@ async def main():
     args = custom_args.split()
     
     custom_server = MCPServer(
-        name="pokevgc",
+        name="PokeChatbot VGC",
         command=custom_cmd,
         args=args,
         cwd=custom_cwd or None,
@@ -635,12 +691,6 @@ async def main():
     )
     
     chatbot.add_mcp_server(custom_server)
-    
-    print(f"📋 Configuración:")
-    print(f"   Comando: {custom_cmd}")
-    print(f"   Args: {' '.join(args)}")
-    if custom_cwd:
-        print(f"   Directorio: {custom_cwd}")
     
     try:
         # Conectar a servidores MCP
@@ -654,7 +704,7 @@ async def main():
         # Mostrar herramientas disponibles
         chatbot.show_available_tools()
         
-        print("\n✅ ¡Host listo!")
+        print("✅ ¡Host listo!\n")
         print("💬 Comandos disponibles:")
         print("   help     - Muestra ayuda")
         print("   tools    - Lista herramientas MCP")
@@ -666,7 +716,7 @@ async def main():
         # Loop principal del chat
         while True:
             try:
-                user_input = input("👤 Tú: ").strip()
+                user_input = input("👤 Entrenador: \n").strip()
                 if not user_input:
                     continue
                 
@@ -683,7 +733,8 @@ async def main():
                     print("   quit     - Salir del chatbot\n")
                     continue
                 elif user_lower == "tools":
-                    chatbot.show_available_tools()
+                    if HOST_DEBUG: chatbot.show_available_tools()
+                    else: print("\n(Comando disponible sólo en modo debug)\n")
                     continue
                 elif user_lower == "history":
                     chatbot.show_conversation_history()
@@ -692,10 +743,10 @@ async def main():
                     chatbot.logger.show_logs()
                     continue
                 
+
                 # Procesar mensaje normal
-                print("🤖 Claude: ", end="", flush=True)
                 response = await chatbot.chat(user_input)
-                print(response + "\n")
+                print(f"{BOT_NAME}: {response}\n")
                 
             except KeyboardInterrupt:
                 print("\n\n⏸️  Interrumpido por el usuario")
