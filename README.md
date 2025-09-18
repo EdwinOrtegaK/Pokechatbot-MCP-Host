@@ -132,6 +132,12 @@ Expected output (in **non-debug** mode, styled):
 
 ## 🔍 Debug Mode (HOST_DEBUG=1)
 
+```bash
+$env:LIST_TOOLS_ON_CONNECT = "1"
+$env:HOST_DEBUG = "1"
+python -m src.host.cli
+```
+
 Enable it to see:
 - Launch and connection (`initialize`, `tools/list`).
 - Registered tools.
