@@ -17,6 +17,8 @@ from collections import deque
 BOT_NAME = os.getenv("BOT_NAME", "🤖 Prof. Oak")
 HOST_DEBUG = os.getenv("HOST_DEBUG", "0") == "1"
 
+LIST_TOOLS_ON_CONNECT = os.getenv("LIST_TOOLS_ON_CONNECT", "0") == "1"
+SHOW_TOOLS_AT_START   = os.getenv("SHOW_TOOLS_AT_START", "0") == "1"
 
 # Instalar dependencias necesarias
 def install_dependencies():
@@ -379,7 +381,7 @@ class MCPChatbot:
                     "schema": t.get("inputSchema", {"type": "object", "properties": {}, "required": []}),
                 }
                 server_tools += 1
-                if HOST_DEBUG:
+                if HOST_DEBUG and LIST_TOOLS_ON_CONNECT:
                     print(f"    → {t.get('name')}: {t.get('description') or 'Sin descripción'}")
 
             etiqueta = server.description or name
@@ -454,7 +456,7 @@ class MCPChatbot:
                 "schema": t.get("inputSchema", {"type":"object","properties":{},"required":[]})
             }
             server_tools += 1
-            if HOST_DEBUG:
+            if HOST_DEBUG and LIST_TOOLS_ON_CONNECT:
                 print(f"    → {t.get('name')}: {t.get('description') or 'Sin descripción'}")
 
         self.logger.log_interaction(name, "CONNECT", {
@@ -464,7 +466,7 @@ class MCPChatbot:
         })
 
         etiqueta = server.description or name
-        print(f"\n✅ Conectado a {etiqueta} ({server_tools} herramientas)\n")
+        print(f"\n✅ Conectado a {etiqueta} ({server_tools} herramientas)")
 
     async def _safe_cleanup(self, ctx, session):    
         """Limpia recursos de manera segura"""
@@ -485,7 +487,7 @@ class MCPChatbot:
             print("⚠️  No hay servidores MCP configurados")
             return
             
-        print("\n🔌 Conectando a servidores MCP...\n")
+        print("\n🔌 Conectando a servidores MCP...")
         successful_connections = 0
         
         for name, server in self.mcp_servers.items():
@@ -496,7 +498,7 @@ class MCPChatbot:
                 print(f"❌ Error conectando a '{name}': {e}\n")
                 self.logger.log_interaction(name, "CONNECT_ERROR", str(e))
         
-        print(f"📊 Resumen: {successful_connections}/{len(self.mcp_servers)} servidores conectados")
+        print(f"📊 Resumen: {successful_connections}/{len(self.mcp_servers)} servidores conectados\n")
     
     async def call_mcp_tool(self, server_name: str, tool_name: str, arguments: Dict[str, Any]) -> Any:
         """Llama a una herramienta del servidor usando la conexión manual."""
@@ -733,20 +735,20 @@ class MCPChatbot:
             return error_msg
     
     def show_available_tools(self):
-        """Muestra las herramientas MCP disponibles"""
+        """Muestra las herramientas MCP disponibles, agrupadas por servidor."""
         if not self.available_tools:
             print("⚠️  No hay herramientas MCP disponibles")
             return
-        
+
         by_server = {}
         for tool_key, tool_info in self.available_tools.items():
             server = tool_info['server']
-            if server not in by_server:
-                by_server[server] = []
-            by_server[server].append(tool_info)
-        
+            by_server.setdefault(server, []).append(tool_info)
+
         for server_name, tools in by_server.items():
             print(f"\n📡 Servidor: {server_name}")
+            for t in sorted(tools, key=lambda x: x["name"]):
+                print(f"   • {t['name']}")
         print()
     
     def show_conversation_history(self):
@@ -852,7 +854,8 @@ async def main():
             print("El chatbot funcionará sin capacidades MCP.")
         
         # Mostrar herramientas disponibles
-        chatbot.show_available_tools()
+        if HOST_DEBUG and SHOW_TOOLS_AT_START:
+            chatbot.show_available_tools()
         
         print("✅ ¡Host listo!\n")
         print("💬 Comandos disponibles:")
@@ -933,7 +936,7 @@ async def main():
         print(f"❌ Error fatal: {str(e)}")
     finally:
         await chatbot.disconnect()
-        print("👋 ¡Hasta luego!")
+        print("👋 ¡Hasta luego!\n")
 
 if __name__ == "__main__":
     asyncio.run(main())
