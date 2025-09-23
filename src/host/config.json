@@ -1,35 +1,122 @@
 {
+  "version": 1,
   "anthropic": {
-    "api_key": "tu-api-key-aqui",
-    "model": "claude-3-sonnet-20240229",
+    "api_key": "***",
+    "model": "claude-sonnet-4-20250514",
     "max_tokens": 4000
   },
-  "mcp_servers": [
-    {
-      "name": "filesystem",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/directory"],
-      "description": "Servidor para operaciones de sistema de archivos",
-      "enabled": false
-    },
-    {
-      "name": "git",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-git", "--repository", "/path/to/repo"],
-      "description": "Servidor para operaciones de Git",
-      "enabled": false
-    },
-    {
-      "name": "custom",
-      "command": "python",
-      "args": ["C:\\ruta\\MCP-PokeVGC-Teambuilder\\server\\main.py"],
-      "description": "Mi servidor MCP personalizado (VGC)",
-      "enabled": true
-    }
-  ],
   "logging": {
     "level": "INFO",
     "file": "mcp_interactions.log",
     "max_history": 1000
-  }
+  },
+  "mcp_servers": [
+    {
+      "name": "vgc-teambuilder",
+      "type": "stdio",
+      "description": "Servidor MCP para construcción de equipos Pokémon VGC",
+      "enabled": true,
+      "command": "C:/Users/Andy Ortega/Progras/Redes/MCP-PokeVGC-Teambuilder/.venv/Scripts/python.exe",
+      "args": ["-u", "-m", "server.main"],
+      "cwd": "C:/Users/Andy Ortega/Progras/Redes/MCP-PokeVGC-Teambuilder",
+      "protocol": "2025-06-18",
+      "init": "modern",
+      "transport": "manual",
+      "framing": "raw",
+      "quirks": {
+        "list_methods": ["tools/list"]
+      },
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONPATH": "C:/Users/Andy Ortega/Progras/Redes/MCP-PokeVGC-Teambuilder"
+      }
+    },
+    {
+      "name": "spotify-mcp",
+      "type": "stdio",
+      "description": "Servidor MCP para controlar Spotify",
+      "enabled": true,
+      "command": "C:/Users/Andy Ortega/Progras/Redes/spotify-mcp-main/.venv/Scripts/python.exe",
+      "args": [
+        "-u",
+        "C:/Users/Andy Ortega/Progras/Redes/spotify-mcp-main/src/spotify_mcp.py"
+      ],
+      "cwd": "C:/Users/Andy Ortega/Progras/Redes/spotify-mcp-main",
+      "protocol": "2024-11-05",
+      "init": "skip",
+      "transport": "manual",
+      "framing": "raw",
+      "quirks": {
+        "list_methods": ["tools/list", "tools.list"]
+      },
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "SPOTIFY_CLIENT_ID": "***",
+        "SPOTIFY_CLIENT_SECRET": "***",
+        "SPOTIFY_ACCESS_TOKEN": "***"
+      }
+    },
+    {
+      "name": "filesystem",
+      "type": "stdio",
+      "description": "Servidor para operaciones de sistema de archivos",
+      "enabled": false,
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:/Users/Andy Ortega/Progras"],
+      "cwd": "C:/Users/Andy Ortega/Progras/Redes/Servers-MCP",
+      "protocol": "2025-06-18",
+      "env": {}
+    },
+    {
+      "name": "git",
+      "type": "stdio",
+      "description": "Servidor para operaciones de Git sobre un repo local",
+      "enabled": false,
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-git", "--repository", "C:/Users/Andy Ortega/Progras/Redes/mi-repo"],
+      "cwd": "C:/Users/Andy Ortega/Progras/Redes/Servers-MCP",
+      "protocol": "2025-06-18",
+      "env": {}
+    },
+    {
+      "name": "github",
+      "type": "stdio",
+      "description": "Servidor para interactuar con GitHub vía Web API",
+      "enabled": false,
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "cwd": "C:/Users/Andy Ortega/Progras/Redes/Servers-MCP",
+      "protocol": "2025-06-18",
+      "env": {
+        "GITHUB_TOKEN": "REEMPLAZA_CON_TU_PAT_DE_GITHUB"
+      }
+    },
+    {
+      "name": "trivial",
+      "type": "stdio",
+      "description": "Servidor MCP trivial/dummy para pruebas",
+      "enabled": false,
+      "command": "C:/Python312/python.exe",
+      "args": ["C:/Users/Andy Ortega/Progras/Redes/Servers-MCP"],
+      "cwd": "C:/Users/Andy Ortega/Progras/Redes/Servers-MCP",
+      "protocol": "2025-06-18",
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
+      "name": "remote-http",
+      "type": "http",
+      "description": "Servidor MCP remoto (HTTP)",
+      "enabled": false,
+      "base_url": "http://localhost:8080",
+      "protocol": "2025-06-18",
+      "headers": {
+        "Authorization": "Bearer REEMPLAZA_SI_APLICA"
+      }
+    }
+  ]
 }
